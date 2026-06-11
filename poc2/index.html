@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>Méditation — POC</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; background: #04070d; overflow: hidden; }
+  body { font-family: -apple-system, system-ui, sans-serif; color: #cdd9ee; }
+  #med_stage { display: block; width: 100vw; height: 100vh; }
+  #med_hud { position: fixed; top: env(safe-area-inset-top, 22px); left: 0; right: 0;
+             text-align: center; font-size: 15px; letter-spacing: .08em; color: #7e93b3; }
+  #med_timer { position: fixed; top: 38%; left: 0; right: 0; text-align: center;
+               font-size: 52px; font-variant-numeric: tabular-nums; color: #e6f0ff; }
+  #med_interrupt { position: fixed; top: calc(38% + 64px); left: 0; right: 0; text-align: center;
+                   font-size: 14px; color: #5e7290; }
+  #med_diag { position: fixed; bottom: 8px; left: 8px; font-size: 11px; color: #28394f; }
+  .med_screen { position: fixed; inset: 0; display: flex; flex-direction: column;
+                align-items: center; justify-content: center; padding: 32px 24px;
+                background: #04070d; z-index: 5; text-align: center; }
+  .med_screen[hidden] { display: none; }
+  .med_title { font-size: 24px; color: #e6f0ff; margin-bottom: 10px; }
+  .med_sub { font-size: 15px; color: #8aa0c0; line-height: 1.5; max-width: 320px; margin-bottom: 6px; }
+  .med_obj { font-size: 14px; color: #6fa8e0; margin: 14px 0 22px; }
+  .med_grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; width: 100%; max-width: 340px; }
+  .med_grid button { padding: 14px 0; font-size: 15px; border: 1px solid #1c2c40; border-radius: 12px;
+                     background: #0c1626; color: #cdd9ee; }
+  .med_grid button.obj { border-color: #3f7fd0; background: #152740; color: #fff; }
+  .med_btn { margin-top: 14px; padding: 15px 26px; font-size: 16px; border: 0; border-radius: 13px;
+             background: #2f6dbf; color: #fff; }
+  .med_btn.ghost { background: #14202f; color: #aebfd6; }
+  .med_row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin-top: 18px; }
+  #med_video { display: none; }
+</style>
+</head>
+<body>
+  <canvas id="med_stage"></canvas>
+  <div id="med_hud"></div>
+  <div id="med_timer"></div>
+  <div id="med_interrupt"></div>
+  <div id="med_diag"></div>
+  <video id="med_video" playsinline></video>
+
+  <div id="med_welcome" class="med_screen">
+    <div class="med_title">Bienvenue</div>
+    <div class="med_sub">Combien de temps veux-tu méditer ?</div>
+    <div id="med_objline" class="med_obj"></div>
+    <div id="med_grid" class="med_grid"></div>
+  </div>
+
+  <div id="med_status" class="med_screen" hidden><div id="med_statusText" class="med_sub">Préparation…</div></div>
+
+  <div id="med_done" class="med_screen" hidden>
+    <div id="med_doneTitle" class="med_title"></div>
+    <div id="med_doneSub" class="med_sub"></div>
+    <div id="med_doneRow" class="med_row"></div>
+  </div>
+
+<script type="module">
+/* ===== réglages ===== */
+const CLOSE_THRESHOLD = 0.5, DEBOUNCE_MS = 250;
+const INHALE_S = 4, EXHALE_S = 6;           // rythme du guide respiratoire
+const SHOW_DIAG = true;                       // passe à false pour masquer les scores
+const TIERS = [30,60,120,180,300,600,900,1200,1800];
+const labelFor = s => s < 60 ? s+" sec" : (s/60)+" min";
+const nextTier = s => { const i = TIERS.indexOf(s); return (i<0||i===TIERS.length-1) ? s : TIERS[i+1]; };
+const MP_CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+/* ===== éléments ===== */
+const cv = document.getElementById("med_stage"), ctx = cv.getContext("2d");
+const hud = document.getElementById("med_hud"), timerEl = document.getElementById("med_timer");
+const interruptEl = document.getElementById("med_interrupt"), diag = document.getElementById("med_diag");
+const video = document.getElementById("med_video");
+const welcome = document.getElementById("med_welcome"), statusScreen = document.getElementById("med_status");
+const statusText = document.getElementById("med_statusText"), grid = document.getElementById("med_grid");
+const objLine = document.getElementById("med_objline");
+const doneScreen = document.getElementById("med_done"), doneTitle = document.getElementById("med_doneTitle");
+const doneSub = document.getElementById("med_doneSub"), doneRow = document.getElementById("med_doneRow");
+if (!SHOW_DIAG) diag.style.display = "none";
+
+let DPR = Math.min(devicePixelRatio || 1, 2), W = 0, H = 0;
+function resize(){ const r = cv.getBoundingClientRect(); W = r.width; H = r.height;
+  cv.width = W*DPR; cv.height = H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0); }
+addEventListener("resize", resize);
+
+/* ===== mémoire locale ===== */
+const todayStr = () => new Date().toISOString().slice(0,10);
+const yesterdayStr = () => { const d = new Date(); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10); };
+let state = JSON.parse(localStorage.getItem("med_state") || "null")
+  || { streak: 0, lastDate: null, suggestedNext: 60, bestClean: 0, sessions: [] };
+const saveState = () => localStorage.setItem("med_state", JSON.stringify(state));
+
+/* ===== audio ===== */
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function tone(f, d, g){ const o = AC.createOscillator(), gn = AC.createGain();
+  o.type = "sine"; o.frequency.value = f; o.connect(gn); gn.connect(AC.destination);
+  gn.gain.setValueAtTime(0.0001, AC.currentTime);
+  gn.gain.exponentialRampToValueAtTime(g, AC.currentTime+0.05);
+  gn.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime+d); o.start(); o.stop(AC.currentTime+d); }
+
+/* ===== dessin ===== */
+function drawEye(cx, cy, w, h, o){ const hw = w/2, lid = Math.max(0.015,o)*(h/2);
+  ctx.beginPath(); ctx.moveTo(cx-hw,cy); ctx.quadraticCurveTo(cx,cy-lid,cx+hw,cy);
+  ctx.quadraticCurveTo(cx,cy+lid,cx-hw,cy); ctx.closePath();
+  ctx.lineWidth = 2.4; ctx.strokeStyle = `rgba(180,210,255,${0.45+0.55*o})`;
+  ctx.shadowColor = "rgba(120,170,255,0.8)"; ctx.shadowBlur = 16*o+6; ctx.stroke();
+  if (o > 0.28){ const k = (o-0.28)/0.72; ctx.beginPath(); const rad = Math.min(lid*0.7,hw*0.32)*k;
+    ctx.arc(cx,cy,Math.max(rad,0.5),0,Math.PI*2); ctx.fillStyle = `rgba(150,195,255,${0.85*k})`; ctx.fill(); }
+  ctx.shadowBlur = 0; }
+function drawBreath(t, env){
+  const mid = H/2;
+  // cercle-guide (enfle à l'inspiration, se rétracte à l'expiration)
+  const r = Math.min(W,H)*0.12 + env*Math.min(W,H)*0.16;
+  ctx.beginPath(); ctx.arc(W/2, mid, r, 0, Math.PI*2);
+  ctx.strokeStyle = `rgba(110,180,255,${0.25+0.25*env})`; ctx.lineWidth = 2;
+  ctx.shadowColor = "rgba(120,185,255,0.6)"; ctx.shadowBlur = 18; ctx.stroke(); ctx.shadowBlur = 0;
+  // lignes entrecroisées, amplitude suit la respiration
+  const L = [[60,1.5,0.6,0.8,2.2],[42,2.4,-0.95,0.55,1.6],[30,3.7,1.5,0.32,1.1]];
+  for (const a of L){ ctx.beginPath();
+    for (let x=0; x<=W; x+=3){ const p = x/W, tp = Math.sin(p*Math.PI);
+      const y = mid + Math.sin(p*Math.PI*2*a[1] + t*a[2]) * a[0] * (0.4+0.6*env) * tp;
+      x===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y); }
+    ctx.strokeStyle = `rgba(130,200,255,${a[3]})`; ctx.lineWidth = a[4];
+    ctx.shadowColor = "rgba(120,185,255,0.6)"; ctx.shadowBlur = 12; ctx.stroke(); }
+  ctx.shadowBlur = 0; }
+
+/* ===== modèle ===== */
+let landmarker;
+const modelReady = (async () => {
+  const vision = await import(MP_CDN);
+  const { FaceLandmarker, FilesetResolver } = vision;
+  const fs = await FilesetResolver.forVisionTasks(MP_CDN + "/wasm");
+  landmarker = await FaceLandmarker.createFromOptions(fs, {
+    baseOptions: { modelAssetPath:
+      "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+      delegate: "GPU" },
+    outputFaceBlendshapes: true, runningMode: "VIDEO", numFaces: 1 });
+})();
+
+/* ===== état de séance ===== */
+let stream = null, rafId = 0;
+let screen = "welcome";              // welcome | session | done
+let chosenSec = 60, remainingMs = 0, interruptions = 0;
+let sessionPhase = "arming";         // arming (attend 1re fermeture) | running
+let openL = 1, openR = 1, bothClosed = false, prevClosed = false;
+let pending = false, pendingSince = 0, closedMix = 0, last = 0, breathT = 0, lastBreathInhale = null;
+
+/* ===== écrans ===== */
+function renderWelcome(){
+  const obj = state.suggestedNext || 60;
+  objLine.innerHTML = `Objectif du jour : méditer <b>${labelFor(obj)}</b>` +
+    (state.streak > 0 ? ` · série de ${state.streak} jour${state.streak>1?"s":""}` : "");
+  grid.innerHTML = "";
+  TIERS.forEach(s => { const b = document.createElement("button");
+    b.textContent = labelFor(s); if (s === obj) b.className = "obj";
+    b.onclick = () => chooseDuration(s); grid.appendChild(b); });
+  welcome.hidden = false; statusScreen.hidden = true; doneScreen.hidden = true;
+}
+async function chooseDuration(sec){
+  chosenSec = sec;
+  welcome.hidden = true; statusScreen.hidden = false;
+  statusText.textContent = "Activation de la caméra…";
+  if (AC.state === "suspended") { try { await AC.resume(); } catch(e){} }
+  if (!stream){
+    try { stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"user" }, audio:false }); }
+    catch(e){ statusText.innerHTML = `Caméra indisponible (${e.name}).<br>La page doit être servie en HTTPS.`; return; }
+    video.srcObject = stream; await video.play();
+  }
+  statusText.textContent = "Chargement du modèle…";
+  try { await modelReady; } catch(e){ statusText.textContent = "Modèle non chargé : " + e.message; return; }
+  enterSession();
+}
+function enterSession(){
+  statusScreen.hidden = true; doneScreen.hidden = true;
+  screen = "session"; sessionPhase = "arming";
+  remainingMs = chosenSec*1000; interruptions = 0;
+  prevClosed = false; bothClosed = false; closedMix = 0; breathT = 0; lastBreathInhale = null;
+  interruptEl.textContent = "";
+  last = performance.now();
+  cancelAnimationFrame(rafId); rafId = requestAnimationFrame(loop);
+}
+function completeSession(){
+  screen = "done"; cancelAnimationFrame(rafId);
+  const clean = interruptions === 0, t = todayStr();
+  if (state.lastDate !== t){
+    state.streak = (state.lastDate === yesterdayStr()) ? state.streak + 1 : 1;
+    state.lastDate = t;
+  }
+  if (clean) state.suggestedNext = nextTier(chosenSec);
+  if (clean && chosenSec > state.bestClean) state.bestClean = chosenSec;
+  state.sessions.push({ date: t, sec: chosenSec, interruptions });
+  saveState();
+  tone(660, 2.6, 0.3);
+  doneTitle.textContent = "Bravo";
+  doneSub.innerHTML = `Tu as médité <b>${labelFor(chosenSec)}</b> ` +
+    (clean ? "sans aucune interruption." : `avec ${interruptions} interruption${interruptions>1?"s":""}.`);
+  const nxt = nextTier(chosenSec);
+  doneRow.innerHTML = "";
+  if (nxt !== chosenSec){ const b = document.createElement("button");
+    b.className = "med_btn"; b.textContent = "Essayer " + labelFor(nxt);
+    b.onclick = () => { chosenSec = nxt; enterSession(); }; doneRow.appendChild(b); }
+  const again = document.createElement("button");
+  again.className = "med_btn ghost"; again.textContent = "Refaire " + labelFor(chosenSec);
+  again.onclick = () => enterSession(); doneRow.appendChild(again);
+  const share = document.createElement("button");
+  share.className = "med_btn ghost"; share.textContent = "Envoyer à un ami";
+  share.onclick = shareResult; doneRow.appendChild(share);
+  const menu = document.createElement("button");
+  menu.className = "med_btn ghost"; menu.textContent = "Menu";
+  menu.onclick = () => { screen = "welcome"; renderWelcome(); }; doneRow.appendChild(menu);
+  doneScreen.hidden = false;
+}
+async function shareResult(){
+  const txt = `Je viens de méditer ${labelFor(chosenSec)} ` +
+    (interruptions === 0 ? "sans interruption 🧘" : `(${interruptions} interruption${interruptions>1?"s":""}) 🧘`);
+  try { if (navigator.share) { await navigator.share({ text: txt }); return; } } catch(e){}
+  try { await navigator.clipboard.writeText(txt); alert("Copié : " + txt); } catch(e){ alert(txt); }
+}
+
+/* ===== boucle ===== */
+function loop(now){
+  if (screen !== "session") return;
+  const dt = now - last; last = now;
+
+  let faceSeen = false;
+  if (landmarker && video.videoWidth > 0){
+    try {
+      const res = landmarker.detectForVideo(video, now);
+      const bs = res.faceBlendshapes?.[0]?.categories;
+      if (bs && bs.length){ faceSeen = true;
+        const bl = bs.find(c=>c.categoryName==="eyeBlinkLeft")?.score ?? 0;
+        const br = bs.find(c=>c.categoryName==="eyeBlinkRight")?.score ?? 0;
+        openL = 1 - bl; openR = 1 - br;
+        const closedNow = bl > CLOSE_THRESHOLD && br > CLOSE_THRESHOLD;
+        if (closedNow !== pending){ pending = closedNow; pendingSince = now; }
+        else if (now - pendingSince > DEBOUNCE_MS) bothClosed = closedNow;
+        if (SHOW_DIAG) diag.textContent = `L ${bl.toFixed(2)}  R ${br.toFixed(2)}`;
+      }
+    } catch(err){ if (SHOW_DIAG) diag.textContent = "detect: " + err.message; }
+  }
+  if (!faceSeen){ bothClosed = false; if (SHOW_DIAG && !diag.textContent.startsWith("detect")) diag.textContent = "visage non détecté"; }
+
+  closedMix += ((bothClosed?1:0) - closedMix) * Math.min(1, dt/280);
+
+  // démarrage à la première fermeture
+  if (sessionPhase === "arming"){
+    hud.textContent = `Objectif : ${labelFor(chosenSec)} · ferme les yeux pour démarrer`;
+    timerEl.textContent = fmt(remainingMs);
+    interruptEl.textContent = "Pose le téléphone face à toi, puis ferme les yeux";
+    if (bothClosed){ sessionPhase = "running"; tone(528, 1.2, 0.18); }
+  } else {
+    // comptage des interruptions (réouverture pendant le décompte)
+    if (prevClosed && !bothClosed){ interruptions++; tone(360, 0.5, 0.12); }
+    if (bothClosed){ remainingMs -= dt; breathT += dt; }
+    hud.textContent = bothClosed ? breathCue() : (faceSeen ? "Ferme les yeux pour reprendre" : "Reviens dans le cadre");
+    timerEl.textContent = fmt(remainingMs);
+    interruptEl.textContent = interruptions ? `${interruptions} interruption${interruptions>1?"s":""}` : "";
+    if (remainingMs <= 0){ completeSession(); return; }
+  }
+  prevClosed = bothClosed;
+
+  // rendu
+  ctx.clearRect(0,0,W,H);
+  const t = now/1000;
+  if (closedMix < 0.98){ ctx.globalAlpha = 1 - closedMix;
+    const ew = Math.min(W*0.22,150), gap = ew*1.15;
+    drawEye(W/2-gap/2, H/2, ew, ew*0.8, openL);
+    drawEye(W/2+gap/2, H/2, ew, ew*0.8, openR); ctx.globalAlpha = 1; }
+  if (closedMix > 0.02){ ctx.globalAlpha = closedMix;
+    drawBreath(t, breathEnv()); ctx.globalAlpha = 1; }
+
+  rafId = requestAnimationFrame(loop);
+}
+
+/* respiration : enveloppe 0..1 + texte + petit son aux transitions */
+function breathEnv(){
+  const cyc = INHALE_S + EXHALE_S, pos = (breathT/1000) % cyc;
+  let env, inhale;
+  if (pos < INHALE_S){ env = pos/INHALE_S; inhale = true; }
+  else { env = 1 - (pos-INHALE_S)/EXHALE_S; inhale = false; }
+  env = 0.5 - 0.5*Math.cos(env*Math.PI);            // lissage
+  if (lastBreathInhale !== inhale){ lastBreathInhale = inhale; tone(inhale?440:330, 0.4, 0.05); }
+  return env;
+}
+function breathCue(){
+  const cyc = INHALE_S + EXHALE_S, pos = (breathT/1000) % cyc;
+  return pos < INHALE_S ? "Inspire…" : "Expire…";
+}
+function fmt(ms){ const s = Math.max(0, Math.ceil(ms/1000)); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; }
+
+/* ===== init ===== */
+resize();
+renderWelcome();
+</script>
+</body>
+</html>
