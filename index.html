@@ -20,14 +20,14 @@
   #status button { display:block; margin: 18px auto 0; padding: 16px 28px; font-size: 17px;
            border: 0; border-radius: 14px; background: #2f6dbf; color: #fff; }
   #video { display: none; }
-  #dbg   { position: fixed; bottom: 8px; left: 8px; font-size: 11px; color: #2f435e; }
+  #diag   { position: fixed; bottom: 8px; left: 8px; font-size: 11px; color: #2f435e; }
 </style>
 </head>
 <body>
   <canvas id="stage"></canvas>
   <div id="hud"></div>
   <div id="timer"></div>
-  <div id="dbg"></div>
+  <div id="diag"></div>
   <video id="video" playsinline></video>
   <div id="status"><div id="statusText">Préparation…<button id="go">Démarrer</button></div></div>
 
@@ -38,7 +38,7 @@ const TARGET_MS = 60000, CLOSE_THRESHOLD = 0.5, DEBOUNCE_MS = 250, COUNTDOWN_S =
 
 const cv = document.getElementById("stage"), ctx = cv.getContext("2d");
 const hud = document.getElementById("hud"), timerEl = document.getElementById("timer");
-const dbg = document.getElementById("dbg"), video = document.getElementById("video");
+const diag = document.getElementById("diag"), video = document.getElementById("video");
 const statusBox = document.getElementById("status"), statusText = document.getElementById("statusText");
 let DPR = Math.min(devicePixelRatio || 1, 2), W = 0, H = 0;
 function resize(){ const r = cv.getBoundingClientRect(); W = r.width; H = r.height;
@@ -129,11 +129,11 @@ function loop(now){
         else if (now - pendingSince > DEBOUNCE_MS && closedNow !== bothClosed){
           bothClosed = closedNow; chime(bothClosed ? 528 : 396, 1.4, 0.18);
         }
-        dbg.textContent = `L ${bl.toFixed(2)}  R ${br.toFixed(2)}`;
+        diag.textContent = `L ${bl.toFixed(2)}  R ${br.toFixed(2)}`;
       }
-    } catch (err) { dbg.textContent = "detect: " + err.message; }
+    } catch (err) { diag.textContent = "detect: " + err.message; }
   }
-  if (!faceSeen){ bothClosed = false; if(!dbg.textContent.startsWith("detect")) dbg.textContent = "visage non détecté"; }
+  if (!faceSeen){ bothClosed = false; if(!diag.textContent.startsWith("detect")) diag.textContent = "visage non détecté"; }
 
   closedMix += ((bothClosed?1:0) - closedMix) * Math.min(1, dt/280);
 
