@@ -32,8 +32,7 @@
   <div id="status"><div id="statusText">Préparation…<button id="go">Démarrer</button></div></div>
 
 <script type="module">
-import { FaceLandmarker, FilesetResolver }
-  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18";
+
 
 const TARGET_MS = 60000, CLOSE_THRESHOLD = 0.5, DEBOUNCE_MS = 250, COUNTDOWN_S = 5, BREATH_PERIOD_S = 10;
 
@@ -76,16 +75,18 @@ function drawWave(t,env){ const mid=H/2, L=[[60,1.5,0.6,0.85,2.4],[42,2.4,-0.95,
   ctx.shadowBlur=0; }
 
 // CHANGEMENT : le modèle se charge dès le départ, on garde la promesse
+const MP_CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 const modelReady = (async () => {
-  const fs = await FilesetResolver.forVisionTasks(
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm");
+  const vision = await import(MP_CDN);                 // <-- import dynamique = la correction
+  const { FaceLandmarker, FilesetResolver } = vision;
+  const fs = await FilesetResolver.forVisionTasks(MP_CDN + "/wasm");
   landmarker = await FaceLandmarker.createFromOptions(fs, {
     baseOptions: { modelAssetPath:
       "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
       delegate: "GPU" },
     outputFaceBlendshapes: true, runningMode: "VIDEO", numFaces: 1 });
 })();
-
+  
 async function start(){
   // CHANGEMENT : caméra d'abord, avec message d'erreur lisible
   setStatus("Activation de la caméra…");
